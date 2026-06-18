@@ -1,0 +1,54 @@
+======================================================================
+Q1: class distribution with human-readable names
+----------------------------------------------------------------------
+        class_name     n   pct
+offensive_language 19190 77.43
+           neither  4163 16.80
+       hate_speech  1430  5.77
+
+======================================================================
+Q2: average tweet length (chars) per class
+----------------------------------------------------------------------
+        class_name  avg_chars  max_chars
+           neither       94.9        522
+       hate_speech       84.6        254
+offensive_language       83.5        754
+
+======================================================================
+Q3: annotator agreement per class (share of tweets where the winning label was unanimous)
+----------------------------------------------------------------------
+        class_name  avg_hate_votes  avg_offensive_votes  avg_neither_votes
+       hate_speech            2.26                 0.76               0.10
+           neither            0.06                 0.26               2.85
+offensive_language            0.18                 3.00               0.08
+
+======================================================================
+Q4: how many annotators rated each tweet, and how the class mix shifts with panel size
+----------------------------------------------------------------------
+ annotator_count  n_tweets  hate  offensive  neither
+               3     22807  1383      17505     3919
+               4       211     7        167       37
+               6      1571    30       1357      184
+               7        27     1         22        4
+               9       167     9        139       19
+
+======================================================================
+Q5: borderline hate-speech tweets (labelled offensive but with at least one hate vote)
+----------------------------------------------------------------------
+ contested_offensive
+                3311
+
+======================================================================
+Q6: ten tweets with the strongest hate-speech consensus
+----------------------------------------------------------------------
+ tweet_id  hate_votes  annotator_count                                                      snippet
+     6348           7                9 @infidelpamelaLC I'm going to blame the black man, since the
+    10729           7                9                                           I hate fat bitches
+    16024           7                9           RT @Isa__Lopez: @D_Lo520 but you're still a faggot
+     6561           6                9 @kcSnowWhite7 @SamSaunders42 don't forget nappy headed, butt
+    16178           6                9 RT @JihadistJoe: We Muslims have no military honour whatsoev
+     3982           6                7              @L1LTR4P fucking losers wetbacks #SorryNotSorry
+     3492           6                6 @Hovaa_ ya I know all the slang I'm racist I h8 porch monkie
+    19562           6                6 RT @iBeZo: Stupid fucking nigger LeBron. You flopping stupid
+     5913           5                9 @clinchmtn316 @sixonesixband AMERICA today, the rule of thum
+    13268           5                9 My advice of the day: If your a tranny.....go fuck your self

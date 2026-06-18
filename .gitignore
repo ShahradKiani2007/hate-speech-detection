@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+.venv/
+.idea/
+
+# generated artifacts (rebuilt by pipeline.py)
+database/*.db
+data/processed/*.pkl
+data/processed/*.npz
+data/processed/*.npy
+data/processed/*.csv
+eda/eda_stats.txt

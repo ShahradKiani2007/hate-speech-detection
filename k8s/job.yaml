@@ -1,0 +1,24 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: hatespeech-pipeline
+spec:
+  backoffLimit: 1
+  template:
+    metadata:
+      labels:
+        app: hatespeech-pipeline
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: pipeline
+          image: hatespeech-pipeline:latest
+          imagePullPolicy: Never        # use the image built into Minikube's Docker daemon
+          command: ["python", "pipeline.py"]
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "512Mi"
+            limits:
+              cpu: "1"
+              memory: "1Gi"
