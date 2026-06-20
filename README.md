@@ -49,12 +49,3 @@ The database schema is documented in `docs/SCHEMA.md` and the EDA write-up in
 
 Every push and pull request to `main` runs the full pipeline and the SQL queries on
 Python 3.12 via GitHub Actions (`.github/workflows/ci.yml`).
-
-## Docker
-
-```
-docker build -t hate-speech-detection .
-docker run --rm hate-speech-detection
-```
-
-See `k8s/README.md` to run the pipeline as a Job on Minikube.
