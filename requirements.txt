@@ -5,3 +5,6 @@ scipy==1.17.1
 SQLAlchemy==2.0.50
 matplotlib==3.10.9
 seaborn==0.13.2
+lightgbm==4.6.0
+mlflow==3.14.0
+prefect==3.7.8

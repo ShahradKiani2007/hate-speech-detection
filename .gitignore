@@ -10,3 +10,9 @@ data/processed/*.npz
 data/processed/*.npy
 data/processed/*.csv
 eda/eda_stats.txt
+
+# phase 3: trained model + experiment tracking (rebuilt by run_train.py)
+models/
+mlruns/
+mlartifacts/
+mlflow.db
