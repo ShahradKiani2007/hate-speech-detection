@@ -16,3 +16,5 @@ models/
 mlruns/
 mlartifacts/
 mlflow.db
+
+.env
