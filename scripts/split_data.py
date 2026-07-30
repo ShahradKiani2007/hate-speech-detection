@@ -7,44 +7,27 @@ from database_connection import PROJECT_ROOT
 SEED = 42
 PROC = PROJECT_ROOT / "data" / "processed"
 
-# 70 / 15 / 15 train / val / test
-TEST_FRAC = 0.15
-VAL_FRAC = 0.15
-
 
 def main():
     df = pd.read_pickle(PROC / "clean.pkl")
 
-    y = df["class_id"].to_numpy()
-    tweet_ids = df["tweet_id"].to_numpy()
-
-    idx = np.arange(len(y))
-
-    train_val_idx, test_idx = train_test_split(
-        idx, test_size=TEST_FRAC, random_state=SEED, stratify=y
+    # 70 / 15 / 15 train / val / test. keeping this two-step stratified split (and
+    # seed) identical to the notebook is what lets us reuse the pre-generated
+    # augmented.csv without leaking augmented hate rows into val / test.
+    train_df, temp_df = train_test_split(
+        df, test_size=0.30, stratify=df["class_id"], random_state=SEED
     )
-    # val fraction is relative to the whole set, so rescale for the second split
-    val_ratio = VAL_FRAC / (1 - TEST_FRAC)
-    train_idx, val_idx = train_test_split(
-        train_val_idx, test_size=val_ratio, random_state=SEED, stratify=y[train_val_idx]
+    val_df, test_df = train_test_split(
+        temp_df, test_size=0.50, stratify=temp_df["class_id"], random_state=SEED
     )
 
-    np.savez(
-        PROC / "splits.npz",
-        train_idx=train_idx,
-        val_idx=val_idx,
-        test_idx=test_idx,
-        tweet_ids=tweet_ids,
-    )
-
-    print(
-        "split rows -> train {}, val {}, test {}".format(
-            len(train_idx), len(val_idx), len(test_idx)
-        )
-    )
-    for name, part in [("train", train_idx), ("val", val_idx), ("test", test_idx)]:
-        counts = np.bincount(y[part], minlength=3)
-        print("  {:5s} class counts (hate/off/neither): {}".format(name, counts.tolist()))
+    for name, part in [("train", train_df), ("validation", val_df), ("test", test_df)]:
+        part = part.reset_index(drop=True)
+        part.to_pickle(PROC / "{}.pkl".format(name))
+        part.to_csv(PROC / "{}.csv".format(name), index=False)
+        counts = np.bincount(part["class_id"].to_numpy(), minlength=3).tolist()
+        print("  {:11s} {:5d} rows  class counts (hate/off/neither): {}".format(
+            name, len(part), counts))
 
 
 if __name__ == "__main__":

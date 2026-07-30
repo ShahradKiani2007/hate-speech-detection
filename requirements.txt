@@ -8,3 +8,18 @@ seaborn==0.13.2
 lightgbm==4.6.0
 mlflow==3.14.0
 prefect==3.7.8
+
+# lstm (word2vec embeddings) + hateBERT fine-tuning
+torch>=2.2
+gensim>=4.3
+transformers>=4.44
+datasets>=2.20
+accelerate>=0.33
+
+# llm classifier + gemini-based data augmentation
+langchain>=0.3
+langchain-core>=0.3
+langchain-google-genai>=2.0
+google-generativeai>=0.8
+pydantic>=2.7
+python-dotenv>=1.0

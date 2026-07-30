@@ -15,8 +15,16 @@ jobs:
         with:
           python-version: '3.12'
       - run: pip install -r requirements.txt
+        # hateBERT fine-tuning and the Gemini LLM need a GPU / API key, so CI runs
+        # the lightweight models (classic ML + LSTM) only. augmented.csv is committed,
+        # so make_augmentations reuses it without calling the LLM.
       - run: python run_train.py
+        env:
+          BERT_SKIP: "1"
       - run: python run_predict.py
+        env:
+          BERT_SKIP: "1"
+          LLM_SKIP: "1"
       - run: python sql/run_queries.py
       - uses: actions/upload-artifact@v4
         with:

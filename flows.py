@@ -18,9 +18,10 @@ def train_flow():
     a = run_step("import_to_db.py")
     b = run_step("load_data.py", wait_for=[a])
     c = run_step("preprocess.py", wait_for=[b])
-    d = run_step("feature_engineering.py", wait_for=[c])
-    e = run_step("split_data.py", wait_for=[d])
-    run_step("train_model.py", wait_for=[e])
+    d = run_step("split_data.py", wait_for=[c])
+    e = run_step("make_augmentations.py", wait_for=[d])
+    f = run_step("feature_engineering.py", wait_for=[e])
+    run_step("train_model.py", wait_for=[f])
 
 
 @flow(name="predict")

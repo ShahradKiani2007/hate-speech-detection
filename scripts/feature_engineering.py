@@ -7,6 +7,7 @@ from scipy import sparse
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.preprocessing import StandardScaler
 
+from data_splits import load_train_augmented, load_split
 from database_connection import PROJECT_ROOT
 
 SEED = 42
@@ -54,16 +55,11 @@ def drop_correlated(df, threshold):
 
 
 def main():
-    df = pd.read_pickle(PROC / "clean.pkl")
     RESULTS.mkdir(parents=True, exist_ok=True)
 
-    splits = np.load(PROC / "splits.npz")
-
-    train_idx = splits["train_idx"]
-    val_idx = splits["val_idx"]
-
-    train_df = df.iloc[train_idx]
-    val_df = df.iloc[val_idx]
+    # train = the real train split + the augmented rows; validation stays clean.
+    train_df = load_train_augmented()
+    val_df = load_split("validation")
 
     train_feats = pd.DataFrame(
         [structural_features(t) for t in train_df["text"]],

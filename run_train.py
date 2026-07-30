@@ -4,12 +4,15 @@ from pathlib import Path
 
 SCRIPTS = Path(__file__).resolve().parent / "scripts"
 
-# training pipeline: data prep (phase 2) -> split -> model training
+# training pipeline: data prep (phase 2) -> split -> augment -> features ->
+# train every model (classic ML + LSTM + hateBERT). make_augmentations reuses a
+# committed augmented.csv if present, otherwise regenerates it via the LLM.
 STEPS = [
     "import_to_db.py",
     "load_data.py",
     "preprocess.py",
     "split_data.py",
+    "make_augmentations.py",
     "feature_engineering.py",
     "train_model.py",
 ]

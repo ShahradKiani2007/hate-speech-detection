@@ -9,7 +9,13 @@ data/processed/*.pkl
 data/processed/*.npz
 data/processed/*.npy
 data/processed/*.csv
+# keep the LLM-augmented rows committed so the pipeline never needs to call the
+# LLM again (make_augmentations.py reuses this file when it exists)
+!data/processed/augmented.csv
 eda/eda_stats.txt
+
+# hateBERT fine-tuning logs (the model itself lives under models/, already ignored)
+results/logs/
 
 # phase 3: trained model + experiment tracking (rebuilt by run_train.py)
 models/

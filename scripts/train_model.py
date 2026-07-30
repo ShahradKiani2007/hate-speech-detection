@@ -1,4 +1,5 @@
 import json
+import os
 import pickle
 
 import matplotlib
@@ -32,6 +33,7 @@ import mlflow
 import mlflow.sklearn
 import pandas as pd
 import torch
+from data_splits import load_train_augmented, load_split
 from database_connection import PROJECT_ROOT
 
 SEED = 42
@@ -193,16 +195,12 @@ def train_ml_classic():
 
 
 def train_lstm():
-    print("== training lstml ==")
-    df = pd.read_pickle(PROC / "clean.pkl")
-    splits = np.load(PROC / "splits.npz")
-
-    train_idx = splits["train_idx"]
-    val_idx = splits["val_idx"]
-    train_df = df.iloc[train_idx]
-    val_df = df.iloc[val_idx]
-    X_train_text = train_df["clean_text"]
-    X_val_text = val_df["clean_text"]
+    print("== training lstm ==")
+    # train = real train split + augmented rows; validation untouched.
+    train_df = load_train_augmented()
+    val_df = load_split("validation")
+    X_train_text = train_df["clean_text"].astype(str)
+    X_val_text = val_df["clean_text"].astype(str)
     y_train = train_df["class_id"]
     y_val = val_df["class_id"]
 
@@ -247,7 +245,7 @@ def train_lstm():
     val_loader = DataLoader(val_ds, batch_size=64, shuffle=False)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    num_classes = df["class_id"].nunique()
+    num_classes = len(CLASS_NAMES)
 
     model = LSTMClassifier(
         vocab_size=vocab_size,
@@ -304,6 +302,127 @@ def train_lstm():
                 indent=2,
             )
 
+def train_bert():
+    # HateBERT fine-tuning is heavy and really wants a GPU, so it is env-tunable:
+    #   BERT_SKIP=1            skip it entirely (used by CI / quick classic+lstm runs)
+    #   BERT_TRAIN_FRACTION=x  subsample the training rows (0<x<=1) for a fast smoke run
+    #   BERT_EPOCHS=n          number of fine-tuning epochs (default 2)
+    if os.getenv("BERT_SKIP"):
+        print("== BERT_SKIP set — skipping HateBERT fine-tuning ==")
+        return
+
+    from scipy.special import softmax
+    from transformers import (
+        AutoTokenizer,
+        AutoModelForSequenceClassification,
+        DataCollatorWithPadding,
+        TrainingArguments,
+        Trainer,
+    )
+    from bert_nn import MODEL_NAME, MAX_LENGTH, to_dataset, tune_hate_threshold
+
+    print("== training hateBERT ==")
+    epochs = int(os.getenv("BERT_EPOCHS", "2"))
+    fraction = float(os.getenv("BERT_TRAIN_FRACTION", "1"))
+
+    train_df = load_train_augmented()
+    if fraction < 1.0:
+        train_df = train_df.sample(frac=fraction, random_state=SEED).reset_index(drop=True)
+        print("subsampled the training set to {:.0%} ({} rows)".format(fraction, len(train_df)))
+    val_df = load_split("validation")
+    for d in (train_df, val_df):
+        d["clean_text"] = d["clean_text"].astype(str)
+        d["class_id"] = d["class_id"].astype(int)
+
+    tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
+    model = AutoModelForSequenceClassification.from_pretrained(
+        MODEL_NAME,
+        num_labels=3,
+        id2label={i: n for i, n in enumerate(CLASS_NAMES)},
+        label2id={n: i for i, n in enumerate(CLASS_NAMES)},
+    )
+
+    train_dataset = to_dataset(train_df, tokenizer)
+    val_dataset = to_dataset(val_df, tokenizer)
+    data_collator = DataCollatorWithPadding(tokenizer)
+
+    training_args = TrainingArguments(
+        output_dir=str(MODELS / "hateBERT_checkpoints"),
+        num_train_epochs=epochs,
+        per_device_train_batch_size=16,
+        per_device_eval_batch_size=64,
+        learning_rate=2e-5,
+        weight_decay=0.01,
+        warmup_ratio=0.1,
+        eval_strategy="epoch",
+        save_strategy="epoch",
+        save_total_limit=1,
+        load_best_model_at_end=True,
+        metric_for_best_model="f1_macro",
+        greater_is_better=True,
+        logging_dir=str(RESULTS / "logs"),
+        logging_steps=50,
+        seed=SEED,
+        data_seed=SEED,
+        report_to="none",
+    )
+
+    trainer = Trainer(
+        model=model,
+        args=training_args,
+        train_dataset=train_dataset,
+        eval_dataset=val_dataset,
+        processing_class=tokenizer,
+        data_collator=data_collator,
+        compute_metrics=lambda eval_pred: compute_metrics(
+            eval_pred.label_ids, np.argmax(eval_pred.predictions, axis=1)
+        ),
+    )
+
+    trainer.train()
+    val_results = trainer.evaluate()
+    print("\nvalidation results:")
+    for k, v in val_results.items():
+        print(" ", k, v)
+
+    # threshold tuning belongs on validation, never on test
+    val_output = trainer.predict(val_dataset)
+    val_probs = softmax(val_output.predictions, axis=1)
+    best_threshold, best_val_f1 = tune_hate_threshold(val_probs, val_output.label_ids)
+    print("\nbest P(hate) threshold on validation: {:.2f} (macro F1 {:.4f})".format(
+        best_threshold, best_val_f1))
+
+    final_path = MODELS / "hateBERT_final"
+    trainer.save_model(final_path)
+    tokenizer.save_pretrained(final_path)
+
+    val_metrics = {k: float(v) for k, v in val_results.items() if isinstance(v, (int, float))}
+    meta = {
+        "model": "hateBERT",
+        "model_name": MODEL_NAME,
+        "epochs": epochs,
+        "max_length": MAX_LENGTH,
+        "learning_rate": 2e-5,
+        "n_train": int(len(train_df)),
+        "n_val": int(len(val_df)),
+        "hate_threshold": best_threshold,
+        "val_macro_f1_at_threshold": float(best_val_f1),
+        "val_metrics": val_metrics,
+    }
+    with open(RESULTS / "hatebert_meta.json", "w") as fh:
+        json.dump(meta, fh, indent=2)
+
+    with mlflow.start_run(run_name="hateBERT"):
+        mlflow.log_param("model", "hateBERT")
+        mlflow.log_param("model_name", MODEL_NAME)
+        mlflow.log_param("epochs", epochs)
+        mlflow.log_metric("hate_threshold", best_threshold)
+        mlflow.log_metric("val_macro_f1_at_threshold", best_val_f1)
+        mlflow.log_metrics({"val_" + k.replace("eval_", ""): v for k, v in val_metrics.items()})
+
+    print("saved fine-tuned model -> models/hateBERT_final")
+
+
 def main():
     RESULTS.mkdir(parents=True, exist_ok=True)
     MODELS.mkdir(parents=True, exist_ok=True)
@@ -312,6 +431,7 @@ def main():
     mlflow.set_experiment(EXPERIMENT)
     train_ml_classic()
     train_lstm()
+    train_bert()
 
 
 

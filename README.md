@@ -28,31 +28,50 @@ since the label is their argmax and using them would leak the target.
 
 ## Modelling and the two pipelines
 
-Phase 3 adds the model and splits the workflow into a **training pipeline** and a
-**prediction pipeline**, so training and inference are automated separately.
+Phase 3 adds the models and splits the workflow into a **training pipeline** and a
+**prediction pipeline**, so training and inference are automated separately. Four model
+families are trained and then all scored on the same held-out test split:
+
+- **Classic ML** — Logistic Regression, Linear SVM, Random Forest, LightGBM over the
+  structural + TF-IDF features; the best on validation (macro-F1) is refit and saved.
+- **LSTM** — a bidirectional LSTM over Word2Vec embeddings trained on the corpus.
+- **LLM** — a Gemini few-shot classifier (`scripts/llm.py`).
+- **HateBERT** — `GroNLP/hateBERT` fine-tuned on the 3-class task.
 
 ```
-python run_train.py     # data prep -> split -> tune & compare models -> save best
-python run_predict.py    # load test tweets -> transform -> predict -> write to DB
+python run.py            # (alias for run_train.py) train every model
+python run_train.py      # data prep -> split -> augment -> features -> train all models
+python run_predict.py    # load test tweets -> transform -> predict with every model -> DB
 ```
 
-`run_train.py` runs the data-prep steps above, then:
+`run_train.py` / `run.py` runs the data-prep steps above, then:
 
-5. **split_data** — stratified 70/15/15 train/val/test split, saved to
-   `data/processed/splits.npz`.
-6. **train_model** — tunes Logistic Regression, Linear SVM, Random Forest, and LightGBM with
-   cross-validated grid search, compares them on the validation split (macro-F1), logs every
-   run to MLflow, refits the winner on train+val, and saves it to `models/model.pkl`.
+5. **split_data** — stratified 70/15/15 train/val/test split, written as
+   `train`/`validation`/`test` `.csv` + `.pkl` in `data/processed/`.
+6. **make_augmentations** — LLM (Gemini) augmentation of the **hate** class:
+   counterfactual / misspelled / paraphrased / quoted variants. These are added to the
+   **training set only** — never validation or test. If `augmented.csv` already exists it is
+   reused as-is (no LLM calls); otherwise it is regenerated (needs `GOOGLE_API_KEY`).
+7. **feature_engineering** — fits the scaler + TF-IDF on the augmented training set.
+8. **train_model** — trains the classic ML ensemble (CV grid search), the LSTM, and
+   fine-tunes HateBERT; logs runs to MLflow and saves each model under `models/`.
 
-`run_predict.py` runs `make_predictions.py`, a self-contained prediction pipeline that
-loads the held-out test tweets from the database, re-applies the **saved** preprocessing and
-feature transformers (no refit — the same scaler and TF-IDF vectoriser from training),
-loads the trained model, evaluates it, and writes the predictions and class probabilities
-back into a `predictions` table in the database.
+`run_predict.py` runs `make_predictions.py`, which loads the held-out `test.csv`, re-applies
+the **saved** transformers (no refit), runs every model, and writes each one's predictions
+and class probabilities into the shared `predictions` table keyed by `(tweet_id, model_name)`.
 
-The Linear SVM wins (test accuracy 0.90, macro-F1 0.69, AUC-ROC 0.93). Full methodology,
-the model comparison, and a business-oriented reading of the results are in
-[`docs/MODEL_REPORT.md`](docs/MODEL_REPORT.md).
+HateBERT fine-tuning is heavy and wants a GPU, so it (and the LLM) are env-tunable:
+
+| var | effect |
+|-----|--------|
+| `BERT_SKIP=1` | skip HateBERT (train and/or predict) |
+| `BERT_TRAIN_FRACTION=0.1` | fine-tune on a fraction of the training rows (quick smoke run) |
+| `BERT_EPOCHS=n` | number of fine-tuning epochs (default 2) |
+| `LLM_SKIP=1` | skip the Gemini LLM at prediction time |
+
+The Linear SVM is the strongest classic model (test accuracy 0.90, macro-F1 0.69,
+AUC-ROC 0.93). Full methodology, the model comparison, and a business-oriented reading of the
+results are in [`docs/MODEL_REPORT.md`](docs/MODEL_REPORT.md).
 
 ## Orchestration (Prefect)
 
@@ -99,8 +118,10 @@ The database schema is documented in `docs/SCHEMA.md` and the EDA write-up in
 
 ## CI
 
-Every push and pull request to `main` runs the full training and prediction pipelines and
-the SQL queries on Python 3.12 via GitHub Actions (`.github/workflows/ci.yml`).
+GitHub Actions (`.github/workflows/ci.yml`) runs the training and prediction pipelines and
+the SQL queries on Python 3.12. HateBERT and the Gemini LLM need a GPU / API key, so CI sets
+`BERT_SKIP` and `LLM_SKIP` and exercises the classic ML + LSTM models only; the committed
+`augmented.csv` means the augmentation step runs offline.
 
 ## Presentation
 

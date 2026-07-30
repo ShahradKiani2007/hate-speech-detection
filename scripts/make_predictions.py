@@ -1,4 +1,5 @@
 import json
+import os
 import pickle
 
 from llm import LlmModel
@@ -11,7 +12,6 @@ from sklearn.metrics import classification_report, log_loss, roc_auc_score
 from sqlalchemy import text
 
 from database_connection import PROJECT_ROOT, get_engine
-from load_data import load_data
 from preprocess import clean_text
 from feature_engineering import structural_features
 from train_model import CLASS_NAMES, compute_metrics, plot_confusion
@@ -140,23 +140,22 @@ def evaluation(y_true, y_pred, proba, meta, df):
 def main():
     RESULTS.mkdir(parents=True, exist_ok=True)
 
-    splits = np.load(PROC / "splits.npz")
-
-    df_all = load_data()
-
-    test_idx = splits["test_idx"]
-    test_ids = splits["tweet_ids"][test_idx]
-
-    df = (
-        df_all[df_all["tweet_id"].isin(test_ids)]
-        .reset_index(drop=True)
-    )
-
+    # the held-out test split, written by split_data.py — the same rows every model
+    # is scored on. LLM / BERT can be skipped via env when the API key / GPU is absent.
+    df = pd.read_csv(PROC / "test.csv")
     df["text"] = df["text"].astype(str)
+    df["clean_text"] = df["clean_text"].astype(str)
 
     classic_ml_model(df)
-    llm_model(df)
+    if os.getenv("LLM_SKIP"):
+        print("== LLM_SKIP set — skipping the LLM model ==")
+    else:
+        llm_model(df)
     lstm_model(df)
+    if os.getenv("BERT_SKIP"):
+        print("== BERT_SKIP set — skipping the hateBERT model ==")
+    else:
+        bert_model(df)
 
 def classic_ml_model(df):
     with open(MODELS / "model.pkl", "rb") as fh:
@@ -252,6 +251,44 @@ def lstm_model(df):
     y_pred = np.concatenate(all_preds)
 
     evaluation(y_true, y_pred, proba, lstm_meta, df)
+
+def bert_model(df):
+    from scipy.special import softmax
+    from transformers import AutoTokenizer, AutoModelForSequenceClassification
+    from bert_nn import MAX_LENGTH
+
+    final_path = MODELS / "hateBERT_final"
+    tokenizer = AutoTokenizer.from_pretrained(final_path)
+    model = AutoModelForSequenceClassification.from_pretrained(final_path)
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model.to(device)
+    model.eval()
+
+    texts = df["clean_text"].astype(str).tolist()
+    y_true = df["class_id"].to_numpy()
+
+    all_logits = []
+    batch_size = 64
+    with torch.no_grad():
+        for i in range(0, len(texts), batch_size):
+            enc = tokenizer(
+                texts[i:i + batch_size],
+                truncation=True,
+                padding=True,
+                max_length=MAX_LENGTH,
+                return_tensors="pt",
+            ).to(device)
+            logits = model(**enc).logits.cpu().numpy()
+            all_logits.append(logits)
+
+    proba = softmax(np.concatenate(all_logits), axis=1)
+    y_pred = proba.argmax(axis=1)
+
+    with open(RESULTS / "hatebert_meta.json") as fh:
+        meta = json.load(fh)
+
+    evaluation(y_true, y_pred, proba, meta, df)
 
 if __name__ == "__main__":
     main()
