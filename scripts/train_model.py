@@ -9,6 +9,9 @@ from scipy import sparse
 from sklearn.calibration import CalibratedClassifierCV
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.linear_model import LogisticRegression
+from sklearn.utils.class_weight import compute_class_weight
+from lstm_nn import TweetDataset, LSTMClassifier, train_epoch, eval_epoch, encode, build_vocab
+from collections import Counter
 from sklearn.metrics import (
     accuracy_score,
     balanced_accuracy_score,
@@ -19,12 +22,16 @@ from sklearn.metrics import (
     precision_score,
     recall_score,
 )
+import torch.nn as nn
+from torch.utils.data import Dataset, DataLoader
+from gensim.models import Word2Vec
 from sklearn.model_selection import GridSearchCV
 from sklearn.svm import LinearSVC
 from lightgbm import LGBMClassifier
 import mlflow
 import mlflow.sklearn
-
+import pandas as pd
+import torch
 from database_connection import PROJECT_ROOT
 
 SEED = 42
@@ -35,6 +42,10 @@ CLASS_NAMES = ["hate", "offensive", "neither"]
 
 EXPERIMENT = "hate-speech-detection"
 REGISTERED_MODEL = "hate-speech-classifier"
+
+EPOCHS = 30
+PATIENCE = 3
+
 
 # each candidate is a fresh estimator plus a small grid to tune over with CV.
 # the grids double as our regularization knobs (C for the linear models,
@@ -98,19 +109,12 @@ def plot_confusion(y_true, y_pred, title, path):
     plt.close(fig)
 
 
-def main():
-    RESULTS.mkdir(parents=True, exist_ok=True)
-    MODELS.mkdir(parents=True, exist_ok=True)
-
+def train_ml_classic():
     X_train = sparse.load_npz(PROC / "X_train.npz")
     X_val = sparse.load_npz(PROC / "X_val.npz")
 
     y_train = np.load(PROC / "y_train.npy")
     y_val = np.load(PROC / "y_val.npy")
-
-    mlflow.set_tracking_uri("sqlite:///" + str(PROJECT_ROOT / "mlflow.db"))
-    mlflow.set_experiment(EXPERIMENT)
-
     comparison = []
     best = {"f1_macro": -1}
 
@@ -187,6 +191,135 @@ def main():
         REGISTERED_MODEL))
 
 
+
+def train_lstm():
+    print("== training lstml ==")
+    df = pd.read_pickle(PROC / "clean.pkl")
+    splits = np.load(PROC / "splits.npz")
+
+    train_idx = splits["train_idx"]
+    val_idx = splits["val_idx"]
+    train_df = df.iloc[train_idx]
+    val_df = df.iloc[val_idx]
+    X_train_text = train_df["clean_text"]
+    X_val_text = val_df["clean_text"]
+    y_train = train_df["class_id"]
+    y_val = val_df["class_id"]
+
+    vocab = build_vocab(X_train_text, max_vocab=20000, min_freq=1)
+    vocab_size = len(vocab)
+    print("vocab size:", vocab_size)
+
+    max_len = max(X_train_text.str.split().str.len())
+    X_train_ids = np.array([encode(t, vocab, max_len) for t in X_train_text])
+    X_val_ids = np.array([encode(t, vocab, max_len) for t in X_val_text])
+    y_train_arr = y_train.to_numpy()
+    y_val_arr = y_val.to_numpy()
+
+    sentences = [t.split() for t in X_train_text]
+    print("== running Word2Vec ==")
+    w2v_model = Word2Vec(
+        sentences=sentences,
+        vector_size=100,
+        window=5,
+        min_count=1,    
+        workers=4,
+        sg=1,
+        epochs=20
+    )
+    w2v_model.save(str(MODELS / "w2v_hatespeech.model"))
+
+    embedding_dim = 100
+    embedding_matrix = np.zeros((vocab_size, embedding_dim), dtype=np.float32)
+
+    hits, misses = 0, 0
+    for word, idx in vocab.items():
+        if word in w2v_model.wv:
+            embedding_matrix[idx] = w2v_model.wv[word]
+            hits += 1
+        else:
+            misses += 1  # <PAD>, <OOV>, and truly unseen words stay zero
+    np.save(MODELS / "embedding_matrix.npy", embedding_matrix)
+    print(f"hits: {hits}, misses: {misses}")
+    train_ds = TweetDataset(X_train_ids, y_train_arr)
+    val_ds = TweetDataset(X_val_ids, y_val_arr)
+    train_loader = DataLoader(train_ds, batch_size=32, shuffle=True)
+    val_loader = DataLoader(val_ds, batch_size=64, shuffle=False)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    num_classes = df["class_id"].nunique()
+
+    model = LSTMClassifier(
+        vocab_size=vocab_size,
+        embedding_dim=embedding_dim,
+        embedding_matrix=embedding_matrix,
+        hidden_dim=64,
+        num_classes=num_classes,
+        pad_idx=vocab["<PAD>"],
+        bidirectional=True,
+        dropout=0.3,
+        freeze_embeddings=False  # True to keep w2v vectors fixed
+    ).to(device)
+    classes = np.unique(y_train_arr)
+    weights = compute_class_weight(class_weight="balanced", classes=classes, y=y_train_arr)
+    class_weights_tensor = torch.tensor(weights, dtype=torch.float32).to(device)
+
+    criterion = nn.CrossEntropyLoss(weight=class_weights_tensor)
+    optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
+
+    best_val_loss = float("inf")
+    patience_counter = 0
+    print("== training model ==")
+    for epoch in range(EPOCHS):
+        train_loss, train_acc = train_epoch(model, train_loader, optimizer, criterion, device)
+        val_loss, val_acc, _, _ = eval_epoch(model, val_loader, criterion, device)
+
+        print(f"Epoch {epoch+1}/{EPOCHS} | "
+            f"train_loss={train_loss:.4f} train_acc={train_acc:.4f} | "
+            f"val_loss={val_loss:.4f} val_acc={val_acc:.4f}")
+
+        if val_loss < best_val_loss:
+            best_val_loss = val_loss
+            patience_counter = 0
+            torch.save(model.state_dict(), MODELS / "best_model.pt")
+        else:
+            patience_counter += 1
+            if patience_counter >= PATIENCE:
+                print(f"Early stopping at epoch {epoch+1} (best val_loss={best_val_loss:.4f})")
+                break
+
+        with open(MODELS / "vocab.pkl", "wb") as f:
+            pickle.dump(vocab, f)
+
+        with open(MODELS / "lstm_meta.json", "w") as f:
+            json.dump(
+                {
+                    "model" : "lstm",
+                    "max_len": max_len,
+                    "embedding_dim": embedding_dim,
+                    "hidden_dim": 64,
+                    "bidirectional": True,
+                },
+                f,
+                indent=2,
+            )
+
+def main():
+    RESULTS.mkdir(parents=True, exist_ok=True)
+    MODELS.mkdir(parents=True, exist_ok=True)
+
+    mlflow.set_tracking_uri("sqlite:///" + str(PROJECT_ROOT / "mlflow.db"))
+    mlflow.set_experiment(EXPERIMENT)
+    train_ml_classic()
+    train_lstm()
+
+
+
+
 if __name__ == "__main__":
     np.random.seed(SEED)
+    torch.manual_seed(SEED)
+
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(SEED)
     main()

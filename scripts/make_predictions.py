@@ -15,6 +15,10 @@ from load_data import load_data
 from preprocess import clean_text
 from feature_engineering import structural_features
 from train_model import CLASS_NAMES, compute_metrics, plot_confusion
+from lstm_nn import LSTMClassifier, encode, TweetDataset, eval_epoch
+import torch
+from torch.utils.data import Dataset, DataLoader
+import torch.nn as nn
 
 PROC = PROJECT_ROOT / "data" / "processed"
 RESULTS = PROJECT_ROOT / "results"
@@ -152,6 +156,7 @@ def main():
 
     classic_ml_model(df)
     llm_model(df)
+    lstm_model(df)
 
 def classic_ml_model(df):
     with open(MODELS / "model.pkl", "rb") as fh:
@@ -182,6 +187,71 @@ def llm_model(df):
     y_pred = model.predict(df["text"].tolist(), checkpoint_path="checkpoints/llm_predictions.json")
     meta = {'model' : 'llm'}
     evaluation(y_true, y_pred, None, meta, df)
+
+def lstm_model(df):
+    df["clean_text"] = df["text"].apply(clean_text)
+    X_test_text = df["clean_text"]
+    y_true = df["class_id"].to_numpy()
+    with open(MODELS / "vocab.pkl", "rb") as f:
+        vocab = pickle.load(f)
+
+    with open(MODELS / "lstm_meta.json") as f:
+        lstm_meta = json.load(f)
+
+    embedding_dim = lstm_meta["embedding_dim"]
+    hidden_dim = lstm_meta["hidden_dim"]
+    bidirectional = lstm_meta["bidirectional"]
+    max_len = lstm_meta["max_len"]
+    embedding_matrix = np.load(MODELS / "embedding_matrix.npy")
+    model = LSTMClassifier(
+        vocab_size=len(vocab),
+        embedding_dim=embedding_dim,
+        embedding_matrix=embedding_matrix,
+        hidden_dim=hidden_dim,
+        num_classes=3,
+        pad_idx=vocab["<PAD>"],
+        bidirectional=bidirectional,
+        dropout=0.3,
+        freeze_embeddings=False,
+    )
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model.load_state_dict(
+        torch.load(MODELS / "best_model.pt", map_location=device)
+    )
+
+    model.to(device)
+    model.eval()
+
+    X_test_ids = np.array([
+        encode(t, vocab, max_len)
+        for t in X_test_text
+    ])
+    test_ds = TweetDataset(X_test_ids, y_true)
+    test_loader = DataLoader(
+        test_ds,
+        batch_size=64,
+        shuffle=False
+    )
+    
+    model.eval()
+
+    all_probs = []
+    all_preds = []
+
+    with torch.no_grad():
+        for x, _ in test_loader:
+            x = x.to(device)
+
+            logits = model(x)
+            probs = torch.softmax(logits, dim=1)
+
+            all_probs.append(probs.cpu().numpy())
+            all_preds.append(logits.argmax(dim=1).cpu().numpy())
+
+    proba = np.concatenate(all_probs)
+    y_pred = np.concatenate(all_preds)
+
+    evaluation(y_true, y_pred, proba, lstm_meta, df)
 
 if __name__ == "__main__":
     main()
