@@ -9,8 +9,8 @@ STEPS = [
     "import_to_db.py",
     "load_data.py",
     "preprocess.py",
-    "feature_engineering.py",
     "split_data.py",
+    "feature_engineering.py",
     "train_model.py",
 ]
 

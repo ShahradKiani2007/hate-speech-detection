@@ -102,10 +102,11 @@ def main():
     RESULTS.mkdir(parents=True, exist_ok=True)
     MODELS.mkdir(parents=True, exist_ok=True)
 
-    X = sparse.load_npz(PROC / "X.npz")
-    y = np.load(PROC / "y.npy")
-    splits = np.load(PROC / "splits.npz")
-    tr, va = splits["train_idx"], splits["val_idx"]
+    X_train = sparse.load_npz(PROC / "X_train.npz")
+    X_val = sparse.load_npz(PROC / "X_val.npz")
+
+    y_train = np.load(PROC / "y_train.npy")
+    y_val = np.load(PROC / "y_val.npy")
 
     mlflow.set_tracking_uri("sqlite:///" + str(PROJECT_ROOT / "mlflow.db"))
     mlflow.set_experiment(EXPERIMENT)
@@ -116,17 +117,17 @@ def main():
     for name, (estimator, grid) in CANDIDATES.items():
         print("\n=== tuning {} ===".format(name))
         search = GridSearchCV(estimator, grid, scoring="f1_macro", cv=3, n_jobs=-1)
-        search.fit(X[tr], y[tr])
+        search.fit(X_train, y_train)
 
         model = search.best_estimator_
-        val_pred = model.predict(X[va])
-        metrics = compute_metrics(y[va], val_pred)
+        val_pred = model.predict(X_val)
+        metrics = compute_metrics(y_val, val_pred)
         print("  best params: {}".format(search.best_params_))
         print("  val f1_macro: {:.4f}  accuracy: {:.4f}".format(
             metrics["f1_macro"], metrics["accuracy"]))
 
         cm_path = RESULTS / "confusion_val_{}.png".format(name)
-        plot_confusion(y[va], val_pred, "{} (validation)".format(name), cm_path)
+        plot_confusion(y_val, val_pred, "{} (validation)".format(name), cm_path)
 
         with mlflow.start_run(run_name=name):
             mlflow.log_param("model", name)
@@ -156,7 +157,8 @@ def main():
 
     # refit the winner on train + validation so the final model sees more data,
     # then keep the test split untouched for honest evaluation later.
-    trva = np.concatenate([tr, va])
+    X_train_val = sparse.vstack([X_train, X_val])
+    y_train_val = np.concatenate([y_train, y_val])
     final = best["estimator"].set_params(**best["params"])
     model_label = best["name"]
     # LinearSVC has no predict_proba; calibrate so we can store class probabilities
@@ -164,7 +166,7 @@ def main():
     if not hasattr(final, "predict_proba"):
         final = CalibratedClassifierCV(final, cv=3)
         model_label = best["name"] + " (calibrated)"
-    final.fit(X[trva], y[trva])
+    final.fit(X_train_val, y_train_val)
 
     with open(MODELS / "model.pkl", "wb") as fh:
         pickle.dump(final, fh)
@@ -173,7 +175,7 @@ def main():
         "model": model_label,
         "params": best["params"],
         "val_f1_macro": best["f1_macro"],
-        "n_features": X.shape[1],
+        "n_features": X_train.shape[1],
         "class_names": CLASS_NAMES,
         "seed": SEED,
     }

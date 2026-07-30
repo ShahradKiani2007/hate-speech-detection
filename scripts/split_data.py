@@ -13,9 +13,10 @@ VAL_FRAC = 0.15
 
 
 def main():
-    y = np.load(PROC / "y.npy")
-    struct = pd.read_csv(PROC / "features_structural.csv")
-    tweet_ids = struct["tweet_id"].to_numpy()
+    df = pd.read_pickle(PROC / "clean.pkl")
+
+    y = df["class_id"].to_numpy()
+    tweet_ids = df["tweet_id"].to_numpy()
 
     idx = np.arange(len(y))
 

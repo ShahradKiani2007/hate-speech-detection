@@ -57,14 +57,39 @@ def main():
     df = pd.read_pickle(PROC / "clean.pkl")
     RESULTS.mkdir(parents=True, exist_ok=True)
 
-    feats = pd.DataFrame([structural_features(t) for t in df["text"]], index=df.index)
+    splits = np.load(PROC / "splits.npz")
 
-    feats, dropped, corr = drop_correlated(feats, CORR_THRESHOLD)
+    train_idx = splits["train_idx"]
+    val_idx = splits["val_idx"]
+
+    train_df = df.iloc[train_idx]
+    val_df = df.iloc[val_idx]
+
+    train_feats = pd.DataFrame(
+        [structural_features(t) for t in train_df["text"]],
+        index=train_df.index
+    )
+
+    val_feats = pd.DataFrame(
+        [structural_features(t) for t in val_df["text"]],
+        index=val_df.index
+    )
+
+
+    train_feats, dropped, corr = drop_correlated(
+        train_feats,
+        CORR_THRESHOLD
+    )
+
+    val_feats = val_feats.drop(columns=dropped)
+
     corr.to_csv(RESULTS / "structural_correlation.csv")
-    print(f"structural features: {feats.shape[1]} kept, dropped {dropped} (corr > {CORR_THRESHOLD})")
+    print(f"structural features: {train_feats.shape[1]} kept, dropped {dropped} (corr > {CORR_THRESHOLD})")
 
     scaler = StandardScaler()
-    feats_scaled = scaler.fit_transform(feats)
+
+    train_struct_scaled = scaler.fit_transform(train_feats)
+    val_struct_scaled = scaler.transform(val_feats)
 
     vectorizer = TfidfVectorizer(
         ngram_range=(1, 2),
@@ -73,30 +98,74 @@ def main():
         sublinear_tf=True,
         stop_words="english",
     )
-    tfidf = vectorizer.fit_transform(df["clean_text"])
-    print(f"tfidf matrix: {tfidf.shape}")
+    train_tfidf = vectorizer.fit_transform(
+        train_df["clean_text"]
+    )
 
-    X = sparse.hstack([sparse.csr_matrix(feats_scaled), tfidf], format="csr")
-    y = df["class_id"].to_numpy()
-    feature_names = list(feats.columns) + [f"tfidf__{w}" for w in vectorizer.get_feature_names_out()]
+    val_tfidf = vectorizer.transform(
+        val_df["clean_text"]
+    )
 
-    structural_out = pd.concat(
-        [df[["tweet_id", "class_id", "class_name"]].reset_index(drop=True), feats.reset_index(drop=True)],
+    print(f"train_tfidf matrix: {train_tfidf.shape}")
+    print(f"val_tfidf matrix: {val_tfidf.shape}")
+
+    X_train = sparse.hstack(
+        [
+            sparse.csr_matrix(train_struct_scaled),
+            train_tfidf
+        ],
+        format="csr"
+    )
+
+    X_val = sparse.hstack(
+        [
+            sparse.csr_matrix(val_struct_scaled),
+            val_tfidf
+        ],
+        format="csr"
+    )
+
+    feature_names = list(train_feats.columns) + [
+        f"tfidf__{w}" for w in vectorizer.get_feature_names_out()
+    ]
+
+    train_structural_out = pd.concat(
+        [
+            train_df[["tweet_id", "class_id", "class_name"]].reset_index(drop=True),
+            train_feats.reset_index(drop=True)
+        ],
         axis=1,
     )
-    structural_out.to_csv(PROC / "features_structural.csv", index=False)
 
-    sparse.save_npz(PROC / "X.npz", X)
-    np.save(PROC / "y.npy", y)
+    val_structural_out = pd.concat(
+        [
+            val_df[["tweet_id", "class_id", "class_name"]].reset_index(drop=True),
+            val_feats.reset_index(drop=True)
+        ],
+        axis=1,
+    )
+
+
+
+    train_structural_out.to_csv(PROC / "features_structural_train.csv", index=False)
+    val_structural_out.to_csv(PROC / "features_structural_val.csv", index=False)
+
+    sparse.save_npz(PROC / "X_train.npz", X_train)
+    sparse.save_npz(PROC / "X_val.npz", X_val)
+
+
+    np.save(PROC / "y_train.npy", train_df["class_id"].to_numpy())
+    np.save(PROC / "y_val.npy", val_df["class_id"].to_numpy())
+
     with open(PROC / "feature_names.pkl", "wb") as fh:
         pickle.dump(feature_names, fh)
     with open(PROC / "tfidf_vectorizer.pkl", "wb") as fh:
         pickle.dump(vectorizer, fh)
     with open(PROC / "scaler.pkl", "wb") as fh:
         pickle.dump(scaler, fh)
-    sparse.save_npz(PROC / "tfidf.npz", tfidf)
+    sparse.save_npz(PROC / "tfidf_train.npz", train_tfidf)
+    sparse.save_npz(PROC / "tfidf_val.npz", val_tfidf)
 
-    print(f"final model-ready matrix X: {X.shape}, y: {y.shape}")
     print(f"saved artifacts to {PROC}")
 
 

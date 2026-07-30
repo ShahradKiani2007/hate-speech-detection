@@ -135,10 +135,19 @@ def evaluation(y_true, y_pred, proba, meta, df):
 
 def main():
     RESULTS.mkdir(parents=True, exist_ok=True)
+
     splits = np.load(PROC / "splits.npz")
-    test_ids = splits["tweet_ids"][splits["test_idx"]]
-    df = load_data()
-    df = df[df["tweet_id"].isin(test_ids)].reset_index(drop=True)
+
+    df_all = load_data()
+
+    test_idx = splits["test_idx"]
+    test_ids = splits["tweet_ids"][test_idx]
+
+    df = (
+        df_all[df_all["tweet_id"].isin(test_ids)]
+        .reset_index(drop=True)
+    )
+
     df["text"] = df["text"].astype(str)
 
     classic_ml_model(df)
